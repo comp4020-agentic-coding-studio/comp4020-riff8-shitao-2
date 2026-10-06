@@ -14,13 +14,16 @@ const wallSource = readFileSync("public/wall.js", "utf8");
 function buildWall({
   canDraw,
   deferFetch = false,
+  cap = 3000,
 }: {
   canDraw: boolean;
   deferFetch?: boolean;
+  cap?: number;
 }) {
   const dom = new JSDOM(
     `<!doctype html><body>
       <svg id="wall" viewBox="0 0 100 100"></svg>
+      <p id="room">The wall has room for <strong id="room-phrase">a stroke</strong> right now.</p>
       <p id="status"></p>
     </body>`,
     { runScripts: "dangerously", url: "http://localhost/" },
@@ -28,6 +31,7 @@ function buildWall({
   const { window } = dom;
   const svg = window.document.getElementById("wall") as unknown as SVGSVGElement;
   const status = window.document.getElementById("status")!;
+  const roomPhrase = window.document.getElementById("room-phrase")!;
 
   // jsdom has no layout engine (getBoundingClientRect is always zero) and no
   // pointer-capture implementation; stub both so wall.js's own coordinate
@@ -63,6 +67,7 @@ function buildWall({
   const script = window.document.createElement("script");
   script.dataset.handColour = "#123456";
   script.dataset.canDraw = String(canDraw);
+  script.dataset.cap = String(cap);
   script.textContent = wallSource;
   window.document.body.appendChild(script);
 
@@ -85,11 +90,29 @@ function buildWall({
   };
   // Flush the microtask queue fetch's promise chain runs on.
   const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
-  const emitMark = (mark: { path: string; colour: string; nonce?: string }) =>
+  const emitMark = (mark: {
+    path: string;
+    colour: string;
+    nonce?: string;
+    cap?: number;
+    room?: string;
+  }) =>
     markListener?.({ data: JSON.stringify(mark) });
   const releaseFetch = () => resolveFetch?.();
 
-  return { svg, status, posted, stroke, key, keyboardStroke, settle, emitMark, releaseFetch };
+  return {
+    svg,
+    status,
+    roomPhrase,
+    posted,
+    gesture,
+    stroke,
+    key,
+    keyboardStroke,
+    settle,
+    emitMark,
+    releaseFetch,
+  };
 }
 
 it("posts one mark for one pointer gesture when a hand can draw", async () => {
@@ -225,4 +248,89 @@ it("doesn't duplicate its own mark when the SSE echo arrives before the post res
   releaseFetch();
   await settle();
   expect(svg.querySelectorAll("path:not(.halo)").length).toBe(1);
+});
+
+// The same measure server.ts applies: the sum of each segment's length.
+const lengthOf = (path: string): number => {
+  const pts = path.split(" ").map((t) => t.slice(1).split(",").map(Number));
+  return pts.slice(1).reduce((sum, [x, y], i) => sum + Math.hypot(x - pts[i][0], y - pts[i][1]), 0);
+};
+
+it("stops a pointer gesture where it runs out of room, and posts the truncated stroke", async () => {
+  // Running out of room should feel like the wall filling up mid-stroke,
+  // not like finishing a stroke and then being told it didn't count.
+  const { svg, status, posted, gesture, settle } = buildWall({ canDraw: true, cap: 50 });
+  gesture(0, 10, "pointerdown");
+  gesture(30, 10, "pointermove");
+  gesture(60, 10, "pointermove");
+  expect(status.textContent).toMatch(/all the room/);
+  gesture(90, 40, "pointermove"); // ignored: there's no room left
+  gesture(90, 40, "pointerup");
+  await settle();
+
+  expect(posted.length).toBe(1);
+  expect(posted[0].path).toBe("M0,10 L30,10 L49,10");
+  expect(lengthOf(posted[0].path)).toBeLessThanOrEqual(50);
+  expect(svg.querySelector("path.mine")?.getAttribute("d")).toBe(posted[0].path);
+});
+
+it("stops a keyboard gesture at the cap too, through the same addPoint", async () => {
+  const { posted, key, settle } = buildWall({ canDraw: true, cap: 70 });
+  key("Enter"); // starts at the centre, 50,50
+  for (let i = 0; i < 5; i++) key("ArrowRight"); // 150 units asked for
+  key("Enter");
+  await settle();
+  expect(posted.length).toBe(1);
+  expect(posted[0].path).toBe("M50,50 L80,50 L110,50 L119,50");
+  expect(lengthOf(posted[0].path)).toBeLessThanOrEqual(70);
+});
+
+it("refuses a stroke landing exactly on the cap, and leaves one inside it untouched", async () => {
+  const { status, posted, gesture, settle } = buildWall({ canDraw: true, cap: 50 });
+  gesture(0, 0, "pointerdown");
+  gesture(30, 40, "pointermove"); // exactly 50 long: still refused, by a hundredth of a unit
+  gesture(20, 0, "pointermove");
+  expect(status.textContent).toMatch(/all the room/);
+  gesture(20, 0, "pointerup");
+  await settle();
+  expect(lengthOf(posted[0].path)).toBeLessThanOrEqual(50);
+
+  const roomy = buildWall({ canDraw: true, cap: 500 });
+  roomy.gesture(0, 0, "pointerdown");
+  roomy.gesture(30, 40, "pointermove");
+  roomy.gesture(60, 0, "pointermove");
+  roomy.gesture(60, 0, "pointerup");
+  await roomy.settle();
+  expect(roomy.posted[0].path).toBe("M0,0 L30,40 L60,0");
+  expect(roomy.status.textContent).not.toMatch(/all the room/);
+});
+
+it("shows the new room the moment any hand's mark arrives, and uses it for the next gesture", async () => {
+  const { roomPhrase, posted, gesture, emitMark, settle } = buildWall({ canDraw: true, cap: 3000 });
+  emitMark({
+    path: "M1,1 L2,2",
+    colour: "#abcdef",
+    nonce: "another-hand",
+    cap: 40,
+    room: "a stroke about 5% of the wall's width",
+  });
+  expect(roomPhrase.textContent).toBe("a stroke about 5% of the wall's width");
+
+  gesture(0, 0, "pointerdown");
+  gesture(0, 90, "pointermove");
+  gesture(0, 90, "pointerup");
+  await settle();
+  expect(posted[0].path).toBe("M0,0 L0,39");
+});
+
+it("keeps a gesture already in progress to the cap it started under", async () => {
+  // The hand was shown one figure when it started; a mark landing mid-stroke
+  // doesn't yank the room out from under it. The server is the backstop.
+  const { posted, gesture, emitMark, settle } = buildWall({ canDraw: true, cap: 80 });
+  gesture(0, 0, "pointerdown");
+  emitMark({ path: "M1,1 L2,2", colour: "#abcdef", nonce: "another-hand", cap: 20, room: "less" });
+  gesture(0, 60, "pointermove");
+  gesture(0, 60, "pointerup");
+  await settle();
+  expect(posted[0].path).toBe("M0,0 L0,60");
 });

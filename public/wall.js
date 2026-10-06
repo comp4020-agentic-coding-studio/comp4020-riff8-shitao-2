@@ -6,8 +6,13 @@
   const script = document.currentScript;
   const svg = document.getElementById("wall");
   const status = document.getElementById("status");
+  const roomPhrase = document.getElementById("room-phrase");
   const handColour = script.dataset.handColour;
   let canDraw = script.dataset.canDraw === "true";
+  // The longest mark the wall has room for, in view-box units. The server
+  // computes it, embeds it in the page and sends a fresh one with every mark
+  // over SSE; this file only ever obeys the latest number it was told.
+  let cap = Number(script.dataset.cap);
   let points = [];
   let live = null;
   let drawing = false;
@@ -51,10 +56,23 @@
   // The stroke being drawn, over its halo, mirroring what the server renders
   // for a hand's own marks.
   let halo = null;
+  // A gesture runs out of room at the cap it started under, not one that
+  // arrives mid-stroke: the hand was shown that figure, and the server stays
+  // the backstop if another mark shrank the real one meanwhile. The hundredth
+  // of a unit keeps a stroke drawn right to the limit clear of any rounding
+  // difference between this browser's arithmetic and the server's.
+  let gestureCap = cap;
+  let used = 0;
+  let full = false;
+  let idleStatus = "";
 
   const beginGesture = (point) => {
     drawing = true;
     points = [point];
+    gestureCap = cap - 0.01;
+    used = 0;
+    full = false;
+    idleStatus = status.textContent;
     halo = document.createElementNS("http://www.w3.org/2000/svg", "path");
     halo.setAttribute("class", "halo");
     live = document.createElementNS("http://www.w3.org/2000/svg", "path");
@@ -63,7 +81,23 @@
     svg.append(halo, live);
   };
 
+  // Past the cap, the stroke stops where the room runs out (each coordinate
+  // rounded towards the previous point, so rounding can't carry it over) and
+  // ignores everything after, so a hand feels the wall fill up rather than
+  // finishing a stroke only to have it refused.
   const addPoint = (point) => {
+    if (full) return;
+    const [lx, ly] = points[points.length - 1];
+    let step = Math.hypot(point[0] - lx, point[1] - ly);
+    if (used + step > gestureCap) {
+      full = true;
+      status.textContent = "That's all the room the wall has for one mark right now: finish it here.";
+      const t = (gestureCap - used) / step;
+      point = [lx + Math.trunc((point[0] - lx) * t), ly + Math.trunc((point[1] - ly) * t)];
+      step = Math.hypot(point[0] - lx, point[1] - ly);
+      if (step === 0 || used + step > gestureCap) return;
+    }
+    used += step;
     points.push(point);
     halo.setAttribute("d", pathFrom(points));
     live.setAttribute("d", pathFrom(points));
@@ -91,6 +125,7 @@
       drawing = false;
       if (points.length < 2) {
         dropLive();
+        status.textContent = idleStatus;
         return;
       }
       const path = pathFrom(points);
@@ -166,6 +201,7 @@
         evt.preventDefault();
         drawing = false;
         dropLive();
+        status.textContent = idleStatus;
       }
     });
   }
@@ -173,6 +209,9 @@
   const stream = new EventSource("/api/marks/stream");
   stream.addEventListener("mark", (evt) => {
     const mark = JSON.parse(evt.data);
+    // Every mark shrinks the room for the next, whoever drew it.
+    if (typeof mark.cap === "number") cap = mark.cap;
+    if (roomPhrase && mark.room) roomPhrase.textContent = mark.room;
     if (mark.nonce && mark.nonce === pendingNonce) {
       pendingNonce = null;
       return;
