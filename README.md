@@ -45,8 +45,11 @@ gets a hand (a cookie, minted once); a mark they draw shows up on the wall
 and is still there on a completely fresh request; a hand can't draw a second
 mark until 24 hours after its last, measured from the mark rather than
 from midnight, since UTC midnight lands at 11am in Canberra and any
-calendar day would be somebody's mid-afternoon; a mark broadcasts over `/api/marks/stream`
-within a second of landing; the page ships no third-party script or
+calendar day would be somebody's mid-afternoon; a mark can be no longer
+than the wall currently has room for, and that room only ever shrinks as the
+wall's total drawn length grows, never below about 5% of its width; a mark
+broadcasts over `/api/marks/stream` within a second of landing, carrying the
+wall's new, smaller room with it; the page ships no third-party script or
 tracking request; every hand colour reads at WCAG 1.4.11's 3:1 non-text
 contrast minimum against both a white and a black background, since
 `color-scheme: light dark` means a stroke has to stay visible under
@@ -55,6 +58,17 @@ than one hand has drawn on it, whether one mark a day is the right pace, and
 whether "no login, ever" survives contact with people who want their marks
 back on a new phone --- those are judgement calls, not tests, and the crit is
 where I find out if they were the right ones.
+
+One mark a day limits how often a hand draws, not how much, so the wall also
+decides how long the next mark can be. An empty wall gives the first hand a
+stroke three times its width; every mark, from anyone, leaves less room for
+the next, and the page says how much is left before anyone starts drawing.
+A stroke that reaches the limit simply stops there, like running out of ink,
+and what's posted is the stroke as far as it got. The server measures every
+posted path itself and refuses one that's too long, so the limit holds even
+against a bare `curl`, and the room line updates live in every open tab the
+moment any mark lands. Why that shape, and what it costs, is in
+`PROCESS.md`.
 
 Nothing about "one hand, one mark" should mean one *input device*. Focusing the wall and pressing
 Enter starts a mark at its centre, the arrow keys extend it a step at a
