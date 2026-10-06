@@ -1,4 +1,5 @@
 import { marked } from "marked";
+import { roomPhrase } from "./cap.ts";
 import type { Mark } from "./db.ts";
 
 const escape = (s: string): string =>
@@ -29,6 +30,7 @@ export function wallPage(
   marks: Mark[],
   hand: { id: string; colour: string },
   msUntilNextMark: number,
+  cap: number,
 ): string {
   const alreadyMarked = msUntilNextMark > 0;
   // Ten colours across every hand means colour alone can't tell a returning
@@ -65,6 +67,7 @@ export function wallPage(
       <svg id="wall" viewBox="0 0 1000 600" ${svgAttrs}>
       ${strokes}
       </svg>
+      <p id="room" aria-live="polite">The wall has room for ${roomPhrase(cap)} right now. Every mark leaves less for the next.</p>
       ${prompt}
       <p><small>You draw as <strong style="color:${escape(handColour)}">this colour</strong>.${ownCount > 0 ? ` Your ${ownCount === 1 ? "mark is" : `${ownCount} marks are`} the thicker ${ownCount === 1 ? "stroke" : "strokes"}.` : ""} <a href="/readme/">What this is, and why</a>.</small></p>
     </main>
@@ -72,6 +75,7 @@ export function wallPage(
       src="/wall.js"
       data-can-draw="${alreadyMarked ? "false" : "true"}"
       data-hand-colour="${escape(handColour)}"
+      data-cap="${cap}"
     ></script>`,
   );
 }

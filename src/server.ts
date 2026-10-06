@@ -1,7 +1,8 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { readFileSync } from "node:fs";
 import { extname, join } from "node:path";
-import { addMark, allMarks, createHand, getHand, msUntilNextMark } from "./db.ts";
+import { capFor, pathLength, roomPhrase } from "./cap.ts";
+import { addMark, allMarks, createHand, getHand, msUntilNextMark, totalLength } from "./db.ts";
 import { colourFor, nameFor, newHandId, parseHandCookie, setHandCookie } from "./identity.ts";
 import { readmePage, untilPhrase, wallPage } from "./pages.ts";
 
@@ -68,8 +69,18 @@ interface SseClient {
 
 const sseClients = new Set<SseClient>();
 
+// Every mark also carries the wall's new length cap, so every open tab's
+// "room left" shrinks the moment any hand's mark lands --- the client never
+// computes the cap itself.
 function broadcastMark(mark: { path: string; colour: string; nonce?: string }): void {
-  const payload = JSON.stringify({ path: mark.path, colour: mark.colour, nonce: mark.nonce });
+  const cap = capFor(totalLength());
+  const payload = JSON.stringify({
+    path: mark.path,
+    colour: mark.colour,
+    nonce: mark.nonce,
+    cap,
+    room: roomPhrase(cap),
+  });
   for (const client of sseClients) {
     client.res.write(`event: mark\ndata: ${payload}\n\n`);
   }
@@ -82,7 +93,7 @@ const server = createServer(async (req, res) => {
     if (req.method === "GET" && url.pathname === "/") {
       const hand = ensureHand(req, res);
       res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-      res.end(wallPage(allMarks(), hand, msUntilNextMark(hand.id)));
+      res.end(wallPage(allMarks(), hand, msUntilNextMark(hand.id), capFor(totalLength())));
       return;
     }
 
@@ -149,16 +160,29 @@ const server = createServer(async (req, res) => {
       // hypothetical one.
       const markNonce = typeof nonce === "string" && nonce.length <= 200 ? nonce : undefined;
 
-      // The check has to be the last thing before the insert, with no
+      // Both checks have to be the last thing before the insert, with no
       // `await` between them: a client that holds its request body open
-      // (a slow POST, or just a second tab) can otherwise pass this check
-      // before either request has inserted, and post twice in one day.
+      // (a slow POST, or just a second tab) can otherwise pass a check
+      // before another request has inserted --- posting twice in one day,
+      // or measuring itself against a cap another mark has since shrunk.
       // node:sqlite's DatabaseSync is fully synchronous, so once nothing
-      // separates the two, nothing can interleave here.
+      // separates them, nothing can interleave here.
       const wait = msUntilNextMark(hand.id);
       if (wait > 0) {
         res.writeHead(429, { "Content-Type": "text/plain; charset=utf-8" });
         res.end(`Your mark is already on the wall. You can add another ${untilPhrase(wait)}.`);
+        return;
+      }
+      // Measured here from the path itself, never from anything the client
+      // says about its own length; wall.js truncates a gesture at the cap it
+      // was shown, so this only refuses a client that didn't, or one whose
+      // cap shrank under another hand's mark while it was drawing.
+      const cap = capFor(totalLength());
+      if (pathLength(path) > cap) {
+        res.writeHead(422, { "Content-Type": "text/plain; charset=utf-8" });
+        res.end(
+          `That mark is longer than the wall has room for right now: ${roomPhrase(cap)}. Try a shorter one.`,
+        );
         return;
       }
 

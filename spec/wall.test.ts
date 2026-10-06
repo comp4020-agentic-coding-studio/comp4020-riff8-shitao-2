@@ -45,8 +45,11 @@ it("a returning hand can tell its own mark from everyone else's", async () => {
   const other = cookieFrom(await fetch(new URL("/", baseUrl)));
 
   // Unique per run: the app under test keeps its database between runs, and
-  // an identical path drawn by an earlier run's hand would match first.
-  const path = `M${Date.now() % 100_000},12 L13,14 L15,16`;
+  // an identical path drawn by an earlier run's hand would match first. The
+  // uniqueness lives in a decimal so the stroke stays short enough for the
+  // length cap.
+  const stamp = Date.now() % 100_000;
+  const path = `M11.${stamp},12 L13,14 L15,16`;
   const post = await fetch(new URL("/api/marks", baseUrl), {
     method: "POST",
     headers: { "Content-Type": "application/json", Cookie: mine },
@@ -57,7 +60,7 @@ it("a returning hand can tell its own mark from everyone else's", async () => {
   const later = await fetch(new URL("/api/marks", baseUrl), {
     method: "POST",
     headers: { "Content-Type": "application/json", Cookie: other },
-    body: JSON.stringify({ path: `M${Date.now() % 100_000},20 L21,22` }),
+    body: JSON.stringify({ path: `M19.${stamp},20 L21,22` }),
   });
   expect(later.status).toBe(201);
 
@@ -156,6 +159,43 @@ it("rejects a mark that isn't a plain stroke path", async () => {
   expect(res.status).toBe(400);
 });
 
+const capOn = async (cookie?: string): Promise<number> => {
+  const html = await (
+    await fetch(new URL("/", baseUrl), { headers: cookie ? { Cookie: cookie } : {} })
+  ).text();
+  const cap = Number(new JSDOM(html).window.document.querySelector("script[data-cap]")?.getAttribute("data-cap"));
+  expect(cap).toBeGreaterThan(0);
+  return cap;
+};
+
+it("refuses a mark longer than the wall's current length cap", async () => {
+  const cookie = cookieFrom(await fetch(new URL("/", baseUrl)));
+  const cap = await capOn(cookie);
+  // Back and forth across the wall until it's past the cap: a well-formed
+  // path (PATH_RE passes it) that's simply too long right now.
+  const legs = Math.ceil(cap / 900) + 1;
+  const path = ["M50,300", ...Array.from({ length: legs }, (_, i) => `L${i % 2 ? 50 : 950},300`)].join(" ");
+
+  const res = await fetch(new URL("/api/marks", baseUrl), {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Cookie: cookie },
+    body: JSON.stringify({ path }),
+  });
+  expect(res.status).toBe(422);
+  expect(await res.text()).toMatch(/longer than the wall has room for/);
+
+  // Refused, not truncated: nothing of it reached the wall, and the hand
+  // still has its mark for the day.
+  const after = await (await fetch(new URL("/", baseUrl), { headers: { Cookie: cookie } })).text();
+  expect(after).not.toContain(path);
+  const short = await fetch(new URL("/api/marks", baseUrl), {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Cookie: cookie },
+    body: JSON.stringify({ path: "M100,100 L130,100" }),
+  });
+  expect(short.status).toBe(201);
+});
+
 it("broadcasts a new mark over /api/marks/stream within a second", async () => {
   const controller = new AbortController();
   const stream = await fetch(new URL("/api/marks/stream", baseUrl), {
@@ -167,7 +207,7 @@ it("broadcasts a new mark over /api/marks/stream within a second", async () => {
   const decoder = new TextDecoder();
   let buffered = "";
 
-  const nextMarkEvent = (): Promise<{ path: string; colour: string }> =>
+  const nextMarkEvent = (): Promise<{ path: string; colour: string; cap: number; room: string }> =>
     (async () => {
       for (;;) {
         const boundary = buffered.indexOf("\n\n");
@@ -188,6 +228,7 @@ it("broadcasts a new mark over /api/marks/stream within a second", async () => {
 
   const first = await fetch(new URL("/", baseUrl));
   const cookie = cookieFrom(first);
+  const capBefore = await capOn(cookie);
   const path = "M11,12 L13,14";
 
   const [event] = await Promise.all([
@@ -205,6 +246,10 @@ it("broadcasts a new mark over /api/marks/stream within a second", async () => {
   ]);
 
   expect(event.path).toBe(path);
+  // The same event tells every open tab the wall's new, smaller cap.
+  expect(event.cap).toBeLessThan(capBefore);
+  expect(event.room).toMatch(/wall's width/);
+  expect(await capOn(cookie)).toBe(event.cap);
   controller.abort();
 });
 
