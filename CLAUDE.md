@@ -51,6 +51,10 @@ honest to that, not just the README:
   independently refuse a second `POST /api/marks` from the same hand within
   24 hours of its last mark (a rolling window, never a calendar day) even if
   the client is a bare `curl`.
+- **A mark's length cap is computed only in `src/cap.ts`, on the server.**
+  `POST /api/marks` measures the posted path itself; `public/wall.js` only
+  obeys the cap the page and each SSE `mark` event hand it. Never copy the
+  formula into the client, and never let it depend on who is drawing.
 - **No third-party requests.** No analytics, no CDN-hosted fonts or scripts,
   no embeds. Every `<script>` and `<link>` the server sends is same-origin.
   `spec/wall.test.ts` checks this; don't add an exception without updating
