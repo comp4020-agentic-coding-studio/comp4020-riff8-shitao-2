@@ -82,3 +82,83 @@ said its hand colours were "not tuned for contrast," and nothing tuned them.
 Five of ten failed WCAG's 3:1 non-text minimum against white or black; they
 were retuned and `spec/contrast.test.ts` now reads the palette from source
 ([`de8164a`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-shitao/commit/de8164a)).
+
+## Decision record: the wall decides how long the next mark can be
+
+**Context.** Crit 9 asks for one decision about how Trace behaves with several
+hands on it at once. Real-time was already there: two browser sessions, one
+drawing and one watching, showed the mark land in the watcher within a
+second, with no reload, before anything changed. What the wall didn't have
+was any sense of itself filling up. One mark a day limits how *often* a hand
+draws, not how *much*: the first stranger could scribble three thousand
+units of line and leave the same wall to everyone after them. The pod that
+wrote this crit's prompt chose the answer: the room a new mark gets should
+shrink as the wall fills, wall-wide and live.
+
+**Decision.** The longest mark a hand may draw is
+`cap = 50 + 2950 / (1 + total / 20000)` view-box units, where `total` is the
+summed length of every segment of every mark already on the wall
+([`2151caf`](https://github.com/comp4020-agentic-coding-studio/comp4020-riff8-shitao-2/commit/2151caf)).
+An empty wall allows 3000, three times the wall's width. The room above the
+floor is half gone at 20,000 units of drawing (about twenty strokes right
+across), and the cap is still shrinking at a million units, where it's 108.
+It never reaches 50, about 5% of the width: always enough for a stroke, never
+so little a mark becomes a dot. I chose a hyperbola over an exponential
+because the exponential halves its room every fixed amount of drawing, so
+after a few hundred marks it sits on the floor and the wall stops responding
+to anything drawn on it. The hyperbola spends room fast while the wall is
+young, when each mark changes its character most, and keeps visibly
+tightening for as long as anyone draws. The server is the only place this runs.
+`POST /api/marks` measures the posted path itself and refuses one over the
+cap with a 422 and a plain-language reason, after `PATH_RE` and the
+one-mark-a-day check and with no `await` before the insert, so two posts
+can't both measure against a total the other is about to change. The cap is
+embedded in the wall page, said in words above the wall before anyone draws,
+and sent with every SSE mark event, so every open tab's "room left" shrinks
+the moment any hand's mark lands
+([`7de1ea4`](https://github.com/comp4020-agentic-coding-studio/comp4020-riff8-shitao-2/commit/7de1ea4),
+[`b8a128b`](https://github.com/comp4020-agentic-coding-studio/comp4020-riff8-shitao-2/commit/b8a128b)).
+`public/wall.js` only obeys the number it was told: a gesture stops taking
+points where it runs out of room, and the truncated stroke is what's posted,
+for pointer and keyboard alike
+([`bfc41c7`](https://github.com/comp4020-agentic-coding-studio/comp4020-riff8-shitao-2/commit/bfc41c7)).
+
+**Alternatives considered.** *Mark count instead of length:* cheaper, but
+twenty short ticks and two long scrawls read very differently as how full a
+wall is, and only length is honest about that. *Reject a finished stroke on
+submit instead of truncating mid-gesture:* the server would be the only
+enforcement and the client would need no length logic at all, and a hand
+would always get exactly the stroke they drew or nothing, never one cut short
+against their intent. But the cost lands on the person least able to bear it:
+a stranger with no account and one mark a day finishes a gesture, is told it
+didn't count, and has to draw again shorter while guessing how much
+shorter. Truncating makes the limit something felt in the hand, like running
+out of ink, rather than a verdict after the fact; it's the same reasoning
+that already hides drawing in advance once a hand has marked today, instead
+of letting it draw and refusing the post. *Per-hand state* (a cap that
+shrinks with how much *you've* drawn) would have needed the cap to know who
+is drawing, which this wall deliberately never weighs; it would also do
+nothing about the wall filling up, since every new hand would start
+generous. *Spatial caps* (less room where the wall is already dense) would
+make the wall's shape matter, not just its total, but each hand's limit
+would depend on where they started, the client would need a density map, and
+"how much room do I have" would stop having one answer anyone could print
+above the wall.
+
+**Consequences.** The live figure is the real-time feature the pod will test:
+two tabs side by side, one drawing, the other's room line shrinking with no
+reload. A gesture keeps the cap it started under even if a mark lands
+mid-stroke, as the prompt asked, so a hand drawing right to the old limit
+while another hand's mark arrives is refused by the server's backstop and
+loses the whole stroke. I reproduced exactly that in two browser sessions;
+it's rare (two hands, the same few seconds, one of them drawing to the
+limit) but it is the reject-on-submit cost this design was chosen to avoid,
+and the obvious next change is to have the client re-truncate to the new cap
+and say so, rather than drop the stroke. The running total lives in memory
+in `src/db.ts`, rebuilt from every mark on boot, which is only correct while
+`fly.toml` pins one machine --- the same assumption the SSE fan-out already
+makes. `spec/cap.test.ts` checks the formula's two promises (it only
+shrinks, and it never makes a mark impossible); `spec/wall.test.ts` that an
+over-cap post is refused and the SSE event carries the smaller cap;
+`spec/wall-client.test.ts` drives the real `wall.js` to the cap with both
+input paths. The new client tests fail against the pre-change `wall.js`.
