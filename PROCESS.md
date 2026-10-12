@@ -162,3 +162,81 @@ shrinks, and it never makes a mark impossible); `spec/wall.test.ts` that an
 over-cap post is refused and the SSE event carries the smaller cap;
 `spec/wall-client.test.ts` drives the real `wall.js` to the cap with both
 input paths. The new client tests fail against the pre-change `wall.js`.
+
+## Decision record: telling hands apart, on the page and in the logs
+
+**Context.** Crit 10 asks the app to tell two or more simultaneous people
+apart on shared state, check that server-side, and prove it with nothing but
+the deployed URL, two classmates in separate Chrome profiles, and `flyctl
+logs`. Trace already had a person: the `hand` cookie, minted on first visit
+and checked on every `POST /api/marks`. What it didn't have was any way to
+*say* which person. Each hand got a generated name at creation, but nothing
+ever read it back, so the only thing a log could have called a hand was its
+cookie value, which is both unreadable aloud and the hand's credential.
+
+**Decision.** A person is still a hand cookie: an anonymous browser, with no
+login and nothing that outlives the cookie. Four changes make it legible.
+The stored name became a handle (`flippingplatypus1`): adjective, animal and
+number hashed from the id, and unique, because two hands sharing a name would
+make the logs lie about who did what. A unique index backs that, a collision
+re-rolls deterministically, and the old hyphenated names (never shown
+anywhere) are renamed once at startup
+([`f84d999`](https://github.com/comp4020-agentic-coding-studio/comp4020-riff8-shitao-2/commit/f84d999)).
+The server logs one line per decision that depends on which hand is asking,
+by that name: `hand.minted`, `wall.opened`, `stream.opened`/`closed`,
+`mark.accepted` (length, the cap it was measured against, the share of that
+room it used, the cap after), and `mark.refused` with its reason (`too_soon`
+with minutes left, `too_long` with length and cap, `malformed`,
+`not_a_path`)
+([`3e0db5f`](https://github.com/comp4020-agentic-coding-studio/comp4020-riff8-shitao-2/commit/3e0db5f)).
+Those are exactly the moments the crit narrates: someone arrives, someone
+watches, someone's mark lands or doesn't and why. Each line leads with a
+millisecond timestamp, so two hands acting in the same second still read as
+two named lines in order. The cookie's year now slides forward on every
+resolving request
+([`cf0ff52`](https://github.com/comp4020-agentic-coding-studio/comp4020-riff8-shitao-2/commit/cf0ff52)),
+and the page tells a hand its own name, how long ago it first came by and
+how many marks it has added, in one line rendered only to that hand
+([`d9e7351`](https://github.com/comp4020-agentic-coding-studio/comp4020-riff8-shitao-2/commit/d9e7351)).
+
+**Alternatives considered.** *Accounts or a typed pseudonym:* the brief allows
+either, but both break the README's "no accounts, ever" and "no text" for
+nothing the crit needs; a typed name is also a caption by another route.
+*A username as its own identity layer* (stored apart from the cookie,
+recoverable): that is an account with the login removed. Keeping the name
+cosmetic on the cookie means losing the cookie loses the name too, which is
+the same promise the wall already made about marks. *Logging hand ids:* the
+id is the cookie's value, so a log line containing it is a credential in a
+log; the name identifies the hand to an operator without letting anyone who
+reads the logs become it. *A request log* (method, path, status for every
+hit): it tells you that something happened, not who it was or why the server
+decided what it did, and the static-file noise would bury the two lines that
+matter. *A fixed year from first visit:* a hand drawing every day would lose
+its identity on its first anniversary for no reason; sliding the window only
+ever protects a hand that keeps coming back.
+
+**Consequences.** Running the server, two `curl` cookie jars posting within
+the same 10 ms, and then two separate browser sessions drawing at once, the
+log alone said who did what: two `mark.accepted` lines 32 ms apart, same
+stroke length, told apart only by name, which is the point. The logs are for
+whoever holds `flyctl logs` access, which is a different audience from a
+visitor. The README's "nobody else can tell whose mark is whose" is about the
+page, and still holds: no name, id or count about one hand ever reaches
+another hand's page or the SSE stream. The operator, though, can now read
+which named hand drew which mark, when it visited and when it watched. That
+is a tracking record in all but intent, kept only as long as Fly keeps logs,
+and it's the honest cost of being able to diagnose the app. The continuity
+line could read as surveillance too, so it says only what the hand could
+work out itself (when it arrived, how many marks it made), in durations
+rather than dates, and only to that hand. A refusal the client prevents
+(drawing again after marking) never reaches the server, so it leaves no log
+line; the logs record decisions, not attempts.
+
+Replay redraws the wall from empty in landing order, each mark in its own
+colour
+([`26c118b`](https://github.com/comp4020-agentic-coding-studio/comp4020-riff8-shitao-2/commit/26c118b)).
+It deliberately doesn't label marks by hand or offer a timeline of dates: the
+page gets each stroke's place in the order, never its owner or its time, so
+replay shows that the wall is many marks layered over time without becoming
+a way to work out who drew what. Its one control, a slider, is also the
+whole reduced-motion experience.

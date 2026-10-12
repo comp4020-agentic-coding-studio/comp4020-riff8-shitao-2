@@ -33,15 +33,17 @@ that everyone can flood stops being a wall anyone wants to add to.
 No text. No titles, no captions, no usernames you type in --- a mark is a
 gesture, not a post, and a gesture can't be unkind in the way a sentence can.
 No accounts: identity is a browser cookie, so "coming back" means the same
-browser, not a login you can carry between devices (yet --- that trade-off
-is worth revisiting once more than one hand at a time is actually drawing on
-it, in the crit after this one). No moderation queue: the constraint is
+browser, not a login you can carry between devices. Telling several hands
+apart at once didn't change that: the cookie already was a person, and a
+generated handle on top of it made that person nameable without making it
+an account. No moderation queue: the constraint is
 upstream, in what a mark is even allowed to be.
 
 ## What's enforced, and what's judged
 
 `spec/` checks the claims that are actually mechanical: a first-time visitor
-gets a hand (a cookie, minted once); a mark they draw shows up on the wall
+gets a hand (a cookie, minted once, whose year starts again every time the
+hand comes back); a mark they draw shows up on the wall
 and is still there on a completely fresh request; a hand can't draw a second
 mark until 24 hours after its last, measured from the mark rather than
 from midnight, since UTC midnight lands at 11am in Canberra and any
@@ -53,7 +55,10 @@ wall's new, smaller room with it; the page ships no third-party script or
 tracking request; every hand colour reads at WCAG 1.4.11's 3:1 non-text
 contrast minimum against both a white and a black background, since
 `color-scheme: light dark` means a stroke has to stay visible under
-whichever one a visitor's own system prefers. Whether the wall is actually *good to look at* once more
+whichever one a visitor's own system prefers; a hand has a handle like
+`heavyrhino5`, the same on every visit and never shared with another hand,
+shown only on its own page next to when it first came by and how many marks
+it has added; replay hands back exactly the wall it started from. Whether the wall is actually *good to look at* once more
 than one hand has drawn on it, whether one mark a day is the right pace, and
 whether "no login, ever" survives contact with people who want their marks
 back on a new phone --- those are judgement calls, not tests, and the crit is
@@ -87,6 +92,33 @@ marks a cookie drew, but never sends a hand id to the page, so nobody else
 can tell whose is whose. `spec/wall.test.ts` checks both halves: the hand
 that drew a mark sees it marked as theirs, and a different hand looking at
 the same wall doesn't.
+
+## Who did what
+
+A hand still isn't an account. Its handle is generated from its cookie and
+worth nothing without it: there's no field to type a name into and no way
+to carry one to another browser. But a wall with more than one person on it
+needs some way to tell them apart, so the server now writes one line to its
+log for every decision that depends on who's asking: a hand arriving, a
+hand opening the live stream, a mark accepted (how long, and how much of
+the room it used), a mark refused (too soon, and for how long; too long,
+and against what cap). Every line names the hand by its handle, never its
+cookie value, so `flyctl logs` can say which of two people drawing in the
+same second did what. Those logs are for whoever runs the app. On the
+page, nobody can tell whose mark is whose, and nothing about one hand ---
+its handle, its marks, when it first came by --- is ever sent to anyone
+else.
+
+## Watching it grow
+
+The wall only ever shows its latest state, flattened. "Replay the wall"
+redraws it from empty, one mark at a time in the order they landed, each
+in its own colour, in about eight seconds however full it is; "Replay my
+marks" does the same for just yours. A slider steps through by hand, and
+it's all you get if you've asked your system for less motion. Replay never
+says whose a mark is or when it landed, only that it came after the one
+before, and it hands back exactly the wall you had: a mark that lands
+while it plays shows up straight away, and starting to draw ends it.
 
 ## What's real-time, and why
 
@@ -122,4 +154,4 @@ several hands' strokes on it. What I haven't tested, because it needs real
 people finding this at the same time rather than hands I drove myself, is
 whether the one-mark-a-day pace still *feels* right once more than a couple
 of hands are drawing in the same hour --- the mechanics hold up; whether the
-pace does is still a question for the crit after this one.
+pace does is still a question only real people drawing on it can answer.
