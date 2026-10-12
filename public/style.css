@@ -47,3 +47,44 @@ body {
 main img {
   max-width: 100%;
 }
+
+#replay {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+#replay-scrub {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+#replay[hidden],
+#replay [hidden] {
+  display: none;
+}
+
+#wall path[data-replay="hidden"] {
+  visibility: hidden;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  #wall path[data-replay="drawing"] {
+    stroke-dasharray: 1;
+    animation: replay-draw var(--replay-step, 300ms) ease-out both;
+  }
+}
+
+@keyframes replay-draw {
+  from {
+    stroke-dashoffset: 1;
+  }
+
+  to {
+    stroke-dashoffset: 0;
+  }
+}

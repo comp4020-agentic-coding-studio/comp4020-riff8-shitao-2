@@ -64,14 +64,19 @@ export function wallPage(
   // that drew it, and never leaves the server as a hand id. A hand's own
   // strokes are painted last, each over a background-coloured halo, so a
   // busy wall's later marks can't bury them.
+  // `data-seq` is each mark's place in the order marks landed (`marks` comes
+  // from allMarks(), oldest first), which painting own marks last otherwise
+  // loses; wall.js's replay reveals strokes in that order. It says when a
+  // mark landed relative to the others, never whose it is.
+  const seqOf = new Map(marks.map((m, i) => [m, i]));
   const own = marks.filter((m) => m.hand_id === hand.id);
   const strokes = [
     ...marks
       .filter((m) => m.hand_id !== hand.id)
-      .map((m) => `<path d="${escape(m.path)}" stroke="${escape(m.colour)}" />`),
+      .map((m) => `<path d="${escape(m.path)}" stroke="${escape(m.colour)}" data-seq="${seqOf.get(m)}" />`),
     ...own.flatMap((m) => [
-      `<path d="${escape(m.path)}" class="halo" />`,
-      `<path d="${escape(m.path)}" stroke="${escape(m.colour)}" class="mine" />`,
+      `<path d="${escape(m.path)}" class="halo" data-seq="${seqOf.get(m)}" />`,
+      `<path d="${escape(m.path)}" stroke="${escape(m.colour)}" class="mine" data-seq="${seqOf.get(m)}" />`,
     ]),
   ].join("\n      ");
   const ownCount = own.length;
@@ -96,6 +101,16 @@ export function wallPage(
       <svg id="wall" viewBox="0 0 1000 600" ${svgAttrs}>
       ${strokes}
       </svg>
+      <div id="replay" hidden>
+        <button type="button" id="replay-all">Replay the wall</button>
+        <button type="button" id="replay-own"${ownCount > 0 ? "" : " hidden"}>Replay my marks</button>
+        <span id="replay-scrub" hidden>
+          <label for="replay-step">Marks shown</label>
+          <input type="range" id="replay-step" min="0" max="0" value="0" />
+          <output id="replay-count" for="replay-step" aria-live="polite"></output>
+          <button type="button" id="replay-stop">Back to the live wall</button>
+        </span>
+      </div>
       ${prompt}
       <p id="you"><small>You're <strong id="username">${escape(hand.name)}</strong>, drawing in <strong style="color:${escape(handColour)}">this colour</strong>. ${continuityLine(hand.created_at, ownCount)}${ownCount > 0 ? ` ${ownCount === 1 ? "It's the thicker stroke" : "They're the thicker strokes"}.` : ""} <a href="/readme/">What this is, and why</a>.</small></p>
     </main>

@@ -48,10 +48,16 @@
 
   const pathFrom = (pts) => pts.map(([x, y], i) => `${i === 0 ? "M" : "L"}${x},${y}`).join(" ");
 
+  // The next free place in landing order, for strokes that arrive after the
+  // page did, so a later replay includes them.
+  let nextSeq =
+    Math.max(-1, ...[...svg.querySelectorAll("path[data-seq]")].map((p) => Number(p.dataset.seq))) + 1;
+
   const appendStroke = (path, colour) => {
     const p = document.createElementNS("http://www.w3.org/2000/svg", "path");
     p.setAttribute("d", path);
     p.setAttribute("stroke", colour);
+    p.dataset.seq = String(nextSeq++);
     // Under this hand's own strokes, which the server paints last.
     svg.insertBefore(p, svg.querySelector(".halo, .mine"));
   };
@@ -70,6 +76,7 @@
   let idleStatus = "";
 
   const beginGesture = (point) => {
+    stopReplay();
     drawing = true;
     points = [point];
     gestureCap = cap - 0.01;
@@ -110,6 +117,114 @@
     halo?.remove();
     live?.remove();
   };
+
+  // Replay: the wall redrawn from empty, one mark at a time in the order
+  // marks landed, from the strokes already on the page. It only ever hides
+  // and reveals those paths through attributes it removes again when it
+  // stops, so the wall it leaves is exactly the one it started from; marks
+  // arriving over SSE meanwhile, and drawing, carry on as normal (starting
+  // a gesture ends the replay).
+  const replayBox = document.getElementById("replay");
+  let replay = null;
+
+  const stopReplay = () => {
+    if (!replay) return;
+    clearTimeout(replay.timer);
+    for (const p of replay.paths) {
+      p.removeAttribute("data-replay");
+      p.removeAttribute("pathLength");
+    }
+    replay = null;
+    svg.style.removeProperty("--replay-step");
+    if (!svg.getAttribute("style")) svg.removeAttribute("style");
+    document.getElementById("replay-scrub").hidden = true;
+    document.getElementById("replay-all").hidden = false;
+    document.getElementById("replay-own").hidden = !svg.querySelector(".mine[data-seq]");
+  };
+
+  // Shows the first n marks (each a stroke, plus its halo for a hand's own),
+  // drawing the newest in when motion is allowed.
+  const showReplay = (n) => {
+    replay.groups.forEach((group, k) => {
+      for (const p of group) {
+        if (k < n - 1 || (k === n - 1 && replay.still)) {
+          p.removeAttribute("data-replay");
+          p.removeAttribute("pathLength");
+        } else if (k === n - 1) {
+          // A path length of 1 lets CSS draw any stroke in with one dash.
+          p.setAttribute("pathLength", "1");
+          p.setAttribute("data-replay", "drawing");
+        } else {
+          p.setAttribute("data-replay", "hidden");
+        }
+      }
+    });
+    replay.shown = n;
+    const step = document.getElementById("replay-step");
+    step.value = String(n);
+    document.getElementById("replay-count").textContent = `${n} of ${replay.groups.length}`;
+  };
+
+  const startReplay = (ownOnly) => {
+    stopReplay();
+    if (drawing) return;
+    const paths = [...svg.querySelectorAll("path[data-seq]")];
+    const bySeq = new Map();
+    for (const p of paths) {
+      if (ownOnly && !p.matches(".mine, .halo")) continue;
+      const seq = Number(p.dataset.seq);
+      if (!bySeq.has(seq)) bySeq.set(seq, []);
+      bySeq.get(seq).push(p);
+    }
+    const groups = [...bySeq.keys()].sort((a, b) => a - b).map((seq) => bySeq.get(seq));
+    if (groups.length === 0) return;
+    // A visitor who's asked for less motion gets the slider and no autoplay:
+    // each step flips straight to the next state.
+    const still = Boolean(window.matchMedia?.("(prefers-reduced-motion: reduce)").matches);
+    replay = { paths, groups, still, shown: 0, timer: undefined };
+    // Everything starts hidden; in an own-only replay, everyone else's
+    // strokes stay hidden throughout.
+    for (const p of paths) p.setAttribute("data-replay", "hidden");
+
+    const step = document.getElementById("replay-step");
+    step.max = String(groups.length);
+    document.getElementById("replay-all").hidden = true;
+    document.getElementById("replay-own").hidden = true;
+    document.getElementById("replay-scrub").hidden = false;
+    showReplay(0);
+
+    if (still) {
+      step.focus();
+      return;
+    }
+    // About eight seconds whatever the wall's size, within sane bounds.
+    const interval = Math.min(600, Math.max(60, 8000 / groups.length));
+    svg.style.setProperty("--replay-step", `${interval}ms`);
+    const tick = () => {
+      if (replay.shown < groups.length) {
+        showReplay(replay.shown + 1);
+        replay.timer = setTimeout(tick, interval);
+      } else {
+        replay.timer = setTimeout(stopReplay, 1200);
+      }
+    };
+    replay.timer = setTimeout(tick, interval);
+  };
+
+  if (replayBox) {
+    replayBox.hidden = !svg.querySelector("path[data-seq]");
+    document.getElementById("replay-own").hidden = !svg.querySelector(".mine[data-seq]");
+    document.getElementById("replay-all").addEventListener("click", () => startReplay(false));
+    document.getElementById("replay-own").addEventListener("click", () => startReplay(true));
+    document.getElementById("replay-stop").addEventListener("click", stopReplay);
+    // Taking the slider stops the autoplay: the visitor is driving now.
+    document.getElementById("replay-step").addEventListener("input", (evt) => {
+      if (!replay) return;
+      clearTimeout(replay.timer);
+      replay.still = true;
+      showReplay(Number(evt.target.value));
+    });
+  }
 
   if (canDraw) {
     svg.addEventListener("pointerdown", (evt) => {
@@ -152,6 +267,13 @@
           return;
         }
         canDraw = false;
+        // Now a stroke on the wall like any other: in landing order, and
+        // replayable as this hand's own.
+        halo.dataset.seq = live.dataset.seq = String(nextSeq++);
+        if (replayBox) {
+          replayBox.hidden = false;
+          if (!replay) document.getElementById("replay-own").hidden = false;
+        }
         if (ownCount) {
           const n = Number(ownCount.dataset.count) + 1;
           ownCount.dataset.count = String(n);

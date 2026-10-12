@@ -1,6 +1,6 @@
 import { JSDOM } from "jsdom";
 import { readFileSync } from "node:fs";
-import { expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 
 // Every other test in spec/ drives the server over HTTP; none of them execute
 // public/wall.js itself, so a client-only bug (like the stuck pointerdown
@@ -15,14 +15,27 @@ function buildWall({
   canDraw,
   deferFetch = false,
   cap = 3000,
+  strokes = "",
+  reducedMotion = false,
 }: {
   canDraw: boolean;
   deferFetch?: boolean;
   cap?: number;
+  strokes?: string;
+  reducedMotion?: boolean;
 }) {
   const dom = new JSDOM(
     `<!doctype html><body>
-      <svg id="wall" viewBox="0 0 100 100"></svg>
+      <svg id="wall" viewBox="0 0 100 100">${strokes}</svg>
+      <div id="replay" hidden>
+        <button type="button" id="replay-all">Replay the wall</button>
+        <button type="button" id="replay-own" hidden>Replay my marks</button>
+        <span id="replay-scrub" hidden>
+          <input type="range" id="replay-step" min="0" max="0" value="0" />
+          <output id="replay-count"></output>
+          <button type="button" id="replay-stop">Back to the live wall</button>
+        </span>
+      </div>
       <p id="room">The wall has room for <strong id="room-phrase">a stroke</strong> right now.</p>
       <p id="status"></p>
       <p id="you">You've just arrived and have added <span id="own-count" data-count="0">no marks yet</span>.</p>
@@ -40,6 +53,13 @@ function buildWall({
   (svg as unknown as { getBoundingClientRect: () => DOMRect }).getBoundingClientRect = () =>
     ({ left: 0, top: 0, width: 100, height: 100 }) as DOMRect;
   (svg as unknown as { setPointerCapture: (id: number) => void }).setPointerCapture = () => {};
+
+  // jsdom has no matchMedia; replay asks it about prefers-reduced-motion.
+  (window as unknown as { matchMedia: unknown }).matchMedia = () => ({ matches: reducedMotion });
+  // Route wall.js's timers through Node's, so vi.useFakeTimers() reaches them.
+  (window as unknown as { setTimeout: unknown }).setTimeout = (fn: () => void, ms: number) => setTimeout(fn, ms);
+  (window as unknown as { clearTimeout: unknown }).clearTimeout = (id: ReturnType<typeof setTimeout>) =>
+    clearTimeout(id);
 
   const posted: { path: string; nonce: string }[] = [];
   // deferFetch lets a test fire the SSE echo for a post while its own fetch
@@ -342,4 +362,114 @@ it("keeps a gesture already in progress to the cap it started under", async () =
   gesture(0, 60, "pointerup");
   await settle();
   expect(posted[0].path).toBe("M0,0 L0,60");
+});
+
+// Three marks as the server renders them for a hand whose own mark landed
+// second: everyone else's in landing order, then its own (halo and stroke)
+// painted last. Replay has to reveal them in landing order, not paint order.
+const WALL = [
+  `<path d="M1,1 L10,10" stroke="#aa0000" data-seq="0" />`,
+  `<path d="M3,3 L30,30" stroke="#0000aa" data-seq="2" />`,
+  `<path d="M2,2 L20,20" class="halo" data-seq="1" />`,
+  `<path d="M2,2 L20,20" stroke="#123456" class="mine" data-seq="1" />`,
+].join("");
+
+const visibleSeqs = (svg: SVGSVGElement) =>
+  [...svg.querySelectorAll("path:not(.halo)")]
+    .filter((p) => p.getAttribute("data-replay") !== "hidden")
+    .map((p) => Number(p.getAttribute("data-seq")))
+    .sort();
+
+const scrubTo = (document: Document, n: number) => {
+  const step = document.getElementById("replay-step") as HTMLInputElement;
+  step.value = String(n);
+  step.dispatchEvent(new document.defaultView!.Event("input"));
+};
+
+afterEach(() => {
+  vi.useRealTimers();
+});
+
+it("steps through the wall in the order marks landed, and leaves it exactly as rendered", () => {
+  const { document, svg } = buildWall({ canDraw: false, strokes: WALL, reducedMotion: true });
+  const before = svg.outerHTML;
+  expect(document.getElementById("replay")!.hidden).toBe(false);
+
+  (document.getElementById("replay-all") as HTMLButtonElement).click();
+  expect(visibleSeqs(svg)).toEqual([]);
+  expect((document.getElementById("replay-step") as HTMLInputElement).max).toBe("3");
+  scrubTo(document, 1);
+  expect(visibleSeqs(svg)).toEqual([0]);
+  scrubTo(document, 2);
+  expect(visibleSeqs(svg)).toEqual([0, 1]); // the hand's own, painted last, landed second
+  expect(document.getElementById("replay-count")!.textContent).toBe("2 of 3");
+  // Reduced motion flips straight to each state: nothing is mid-draw.
+  expect(svg.querySelector("[data-replay=drawing]")).toBeNull();
+  scrubTo(document, 3);
+  expect(visibleSeqs(svg)).toEqual([0, 1, 2]);
+
+  (document.getElementById("replay-stop") as HTMLButtonElement).click();
+  expect(svg.outerHTML).toBe(before);
+});
+
+it("plays itself through, drawing each mark in, then hands back the same wall", () => {
+  vi.useFakeTimers();
+  const { document, svg } = buildWall({ canDraw: false, strokes: WALL });
+  const before = svg.outerHTML;
+
+  (document.getElementById("replay-all") as HTMLButtonElement).click();
+  expect(visibleSeqs(svg)).toEqual([]);
+  vi.advanceTimersByTime(600);
+  expect(svg.querySelector("[data-replay=drawing]")?.getAttribute("data-seq")).toBe("0");
+  vi.advanceTimersByTime(1200);
+  expect(visibleSeqs(svg)).toEqual([0, 1, 2]);
+  vi.advanceTimersByTime(2000);
+  expect(svg.outerHTML).toBe(before);
+  expect(document.getElementById("replay-all")!.hidden).toBe(false);
+});
+
+it("replays only the hand's own marks, keeping everyone else's hidden until it ends", () => {
+  const { document, svg } = buildWall({ canDraw: false, strokes: WALL, reducedMotion: true });
+  const before = svg.outerHTML;
+  const own = document.getElementById("replay-own") as HTMLButtonElement;
+  expect(own.hidden).toBe(false);
+
+  own.click();
+  expect((document.getElementById("replay-step") as HTMLInputElement).max).toBe("1");
+  scrubTo(document, 1);
+  expect(visibleSeqs(svg)).toEqual([1]);
+  expect(svg.querySelector(".halo")!.getAttribute("data-replay")).toBeNull();
+
+  (document.getElementById("replay-stop") as HTMLButtonElement).click();
+  expect(svg.outerHTML).toBe(before);
+});
+
+it("offers no own-marks replay to a hand with no marks", () => {
+  const { document } = buildWall({ canDraw: true, strokes: WALL.split("<path").slice(0, 3).join("<path") });
+  expect(document.getElementById("replay-own")!.hidden).toBe(true);
+});
+
+it("lets a live mark land mid-replay, and includes it in the next one", () => {
+  const { document, svg, emitMark } = buildWall({ canDraw: false, strokes: WALL, reducedMotion: true });
+  (document.getElementById("replay-all") as HTMLButtonElement).click();
+  emitMark({ path: "M5,5 L50,50", colour: "#00aa00", nonce: "another-hand" });
+  const arrived = svg.querySelector('path[stroke="#00aa00"]')!;
+  expect(arrived.getAttribute("data-replay")).toBeNull();
+  expect(arrived.getAttribute("data-seq")).toBe("3");
+
+  (document.getElementById("replay-stop") as HTMLButtonElement).click();
+  expect(arrived.getAttribute("data-replay")).toBeNull();
+  (document.getElementById("replay-all") as HTMLButtonElement).click();
+  expect((document.getElementById("replay-step") as HTMLInputElement).max).toBe("4");
+});
+
+it("ends a replay when the hand starts drawing, and the mark posts as normal", async () => {
+  const { document, svg, posted, stroke, settle } = buildWall({ canDraw: true, strokes: WALL, reducedMotion: true });
+  (document.getElementById("replay-all") as HTMLButtonElement).click();
+  stroke(40, 60);
+  await settle();
+  expect(svg.querySelector("[data-replay]")).toBeNull();
+  expect(posted.length).toBe(1);
+  // The new mark takes the next place in landing order, as this hand's own.
+  expect(svg.querySelector("path.mine:last-child")?.getAttribute("data-seq")).toBe("3");
 });

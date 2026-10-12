@@ -82,12 +82,18 @@ it("a returning hand can tell its own mark from everyone else's", async () => {
       // On a busy wall, later marks would bury it unless it's painted last.
       paintedLast: strokes.at(-1)?.getAttribute("d") === path,
       anyMatch: strokes.some((p) => p.getAttribute("d") === path),
+      // Painted last, but still placed in landing order for replay: before
+      // the other hand's later mark.
+      landedFirst:
+        Number(strokes.find((p) => p.getAttribute("d") === path)?.getAttribute("data-seq")) <
+        Number(strokes.find((p) => p.getAttribute("d") === `M19.${stamp},20 L21,22`)?.getAttribute("data-seq")),
     };
   };
 
   const asMine = await strokeFor(mine);
   expect(asMine.ownMark).toBeDefined();
   expect(asMine.paintedLast).toBe(true);
+  expect(asMine.landedFirst).toBe(true);
   const asOther = await strokeFor(other);
   expect(asOther.anyMatch).toBe(true);
   expect(asOther.ownMark).toBeUndefined();
