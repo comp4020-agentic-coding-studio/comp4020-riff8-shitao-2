@@ -4,6 +4,7 @@ import { extname, join } from "node:path";
 import { capFor, pathLength, roomPhrase } from "./cap.ts";
 import { addMark, allMarks, createHand, getHand, type Hand, msUntilNextMark, nameTaken, totalLength } from "./db.ts";
 import { colourFor, newHandId, parseHandCookie, setHandCookie, uniqueNameFor } from "./identity.ts";
+import { logEvent } from "./log.ts";
 import { readmePage, untilPhrase, wallPage } from "./pages.ts";
 
 const PORT = Number(process.env.PORT ?? 8080);
@@ -54,7 +55,15 @@ function ensureHand(req: IncomingMessage, res: ServerResponse): { hand: Hand; mi
   const id = newHandId();
   const hand = createHand(id, uniqueNameFor(id, nameTaken), colourFor(id));
   res.setHeader("Set-Cookie", setHandCookie(id, isProd));
+  logEvent("hand.minted", hand.name, { colour: hand.colour });
   return { hand, minted: true };
+}
+
+// The username a request's cookie resolves to, for a log line, without
+// minting a hand the way ensureHand does.
+function knownHand(req: IncomingMessage): string | undefined {
+  const id = parseHandCookie(req.headers.cookie);
+  return id ? getHand(id)?.name : undefined;
 }
 
 // The real-time layer: every open tab holds one of these open, and a mark
@@ -92,9 +101,17 @@ const server = createServer(async (req, res) => {
     const url = new URL(req.url ?? "/", "http://localhost");
 
     if (req.method === "GET" && url.pathname === "/") {
-      const { hand } = ensureHand(req, res);
+      const { hand, minted } = ensureHand(req, res);
+      const marks = allMarks();
+      const wait = msUntilNextMark(hand.id);
+      if (!minted) {
+        logEvent("wall.opened", hand.name, {
+          marks: marks.filter((m) => m.hand_id === hand.id).length,
+          can_draw: wait > 0 ? "no" : "yes",
+        });
+      }
       res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-      res.end(wallPage(allMarks(), hand, msUntilNextMark(hand.id), capFor(totalLength())));
+      res.end(wallPage(marks, hand, wait, capFor(totalLength())));
       return;
     }
 
@@ -106,6 +123,8 @@ const server = createServer(async (req, res) => {
     }
 
     if (req.method === "GET" && url.pathname === "/api/marks/stream") {
+      // Looked up, never minted: the page that opens this stream already did.
+      const watcher = knownHand(req);
       res.writeHead(200, {
         "Content-Type": "text/event-stream",
         "Cache-Control": "no-cache",
@@ -117,9 +136,11 @@ const server = createServer(async (req, res) => {
       const heartbeat = setInterval(() => res.write(": ping\n\n"), 20_000);
       const client: SseClient = { res, heartbeat };
       sseClients.add(client);
+      logEvent("stream.opened", watcher, { watching: sseClients.size });
       req.on("close", () => {
         clearInterval(heartbeat);
         sseClients.delete(client);
+        logEvent("stream.closed", watcher, { watching: sseClients.size });
       });
       return;
     }
@@ -143,12 +164,14 @@ const server = createServer(async (req, res) => {
         path = body.path;
         nonce = body.nonce;
       } catch {
+        logEvent("mark.refused", hand.name, { reason: "malformed" });
         res.writeHead(400, { "Content-Type": "text/plain; charset=utf-8" });
         res.end("Malformed request.");
         return;
       }
 
       if (typeof path !== "string" || !PATH_RE.test(path)) {
+        logEvent("mark.refused", hand.name, { reason: "not_a_path" });
         res.writeHead(400, { "Content-Type": "text/plain; charset=utf-8" });
         res.end("That doesn't look like a mark.");
         return;
@@ -170,6 +193,7 @@ const server = createServer(async (req, res) => {
       // separates them, nothing can interleave here.
       const wait = msUntilNextMark(hand.id);
       if (wait > 0) {
+        logEvent("mark.refused", hand.name, { reason: "too_soon", next_in_min: Math.ceil(wait / 60_000) });
         res.writeHead(429, { "Content-Type": "text/plain; charset=utf-8" });
         res.end(`Your mark is already on the wall. You can add another ${untilPhrase(wait)}.`);
         return;
@@ -179,7 +203,13 @@ const server = createServer(async (req, res) => {
       // was shown, so this only refuses a client that didn't, or one whose
       // cap shrank under another hand's mark while it was drawing.
       const cap = capFor(totalLength());
-      if (pathLength(path) > cap) {
+      const length = pathLength(path);
+      if (length > cap) {
+        logEvent("mark.refused", hand.name, {
+          reason: "too_long",
+          length: Math.round(length),
+          cap: Math.round(cap),
+        });
         res.writeHead(422, { "Content-Type": "text/plain; charset=utf-8" });
         res.end(
           `That mark is longer than the wall has room for right now: ${roomPhrase(cap)}. Try a shorter one.`,
@@ -189,6 +219,14 @@ const server = createServer(async (req, res) => {
 
       const mark = addMark(hand.id, path, hand.colour);
       broadcastMark({ ...mark, nonce: markNonce });
+      logEvent("mark.accepted", hand.name, {
+        mark: mark.id,
+        length: Math.round(length),
+        cap: Math.round(cap),
+        room_used: `${Math.round((length / cap) * 100)}%`,
+        cap_now: Math.round(capFor(totalLength())),
+        watching: sseClients.size,
+      });
       res.writeHead(201, { "Content-Type": "text/plain; charset=utf-8" });
       res.end("ok");
       return;
@@ -197,6 +235,16 @@ const server = createServer(async (req, res) => {
     res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
     res.end("Not found.");
   } catch (err) {
+    let failedHand: string | undefined;
+    try {
+      failedHand = knownHand(req);
+    } catch {
+      // The failure may be the database itself; log the request without a name.
+    }
+    logEvent("request.failed", failedHand, {
+      method: req.method ?? "-",
+      path: new URL(req.url ?? "/", "http://localhost").pathname,
+    });
     console.error(err);
     res.writeHead(500, { "Content-Type": "text/plain; charset=utf-8" });
     res.end("Something went wrong.");
