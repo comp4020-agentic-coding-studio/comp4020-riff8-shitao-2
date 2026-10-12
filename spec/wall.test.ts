@@ -21,6 +21,15 @@ it("gives a first-time visitor a hand cookie", async () => {
   expect(cookie).toMatch(/^hand=[0-9a-f-]{36}$/);
 });
 
+it("re-issues a returning hand's cookie with a fresh year, not a new identity", async () => {
+  const cookie = cookieFrom(await fetch(new URL("/", baseUrl)));
+  const again = await fetch(new URL("/", baseUrl), { headers: { Cookie: cookie } });
+  const raw = again.headers.get("set-cookie");
+  expect(raw, "a resolving request should slide the cookie's expiry forward").toBeTruthy();
+  expect(raw!.split(";")[0]).toBe(cookie);
+  expect(raw).toMatch(/Max-Age=31536000/);
+});
+
 it("a hand's mark appears on the wall and survives a fresh request", async () => {
   const first = await fetch(new URL("/", baseUrl));
   const cookie = cookieFrom(first);

@@ -2,7 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { readFileSync } from "node:fs";
 import { extname, join } from "node:path";
 import { capFor, pathLength, roomPhrase } from "./cap.ts";
-import { addMark, allMarks, createHand, getHand, msUntilNextMark, nameTaken, totalLength } from "./db.ts";
+import { addMark, allMarks, createHand, getHand, type Hand, msUntilNextMark, nameTaken, totalLength } from "./db.ts";
 import { colourFor, newHandId, parseHandCookie, setHandCookie, uniqueNameFor } from "./identity.ts";
 import { readmePage, untilPhrase, wallPage } from "./pages.ts";
 
@@ -40,20 +40,21 @@ function readBody(req: IncomingMessage): Promise<string> {
 // points so a hand-rolled request can't post an arbitrarily large stroke.
 const PATH_RE = /^M-?\d+(\.\d+)?,-?\d+(\.\d+)?(\sL-?\d+(\.\d+)?,-?\d+(\.\d+)?){1,2000}$/;
 
-interface HandInfo {
-  id: string;
-  colour: string;
-}
-
-function ensureHand(req: IncomingMessage, res: ServerResponse): HandInfo {
+// The cookie is re-issued with a fresh year on every request that resolves a
+// hand, not only when it's minted: a hand that keeps coming back keeps its
+// identity, and only one that's been away for a whole year starts again.
+function ensureHand(req: IncomingMessage, res: ServerResponse): { hand: Hand; minted: boolean } {
   const existing = parseHandCookie(req.headers.cookie);
   const found = existing ? getHand(existing) : undefined;
-  if (found) return { id: found.id, colour: found.colour };
+  if (found) {
+    res.setHeader("Set-Cookie", setHandCookie(found.id, isProd));
+    return { hand: found, minted: false };
+  }
 
   const id = newHandId();
   const hand = createHand(id, uniqueNameFor(id, nameTaken), colourFor(id));
   res.setHeader("Set-Cookie", setHandCookie(id, isProd));
-  return { id: hand.id, colour: hand.colour };
+  return { hand, minted: true };
 }
 
 // The real-time layer: every open tab holds one of these open, and a mark
@@ -91,7 +92,7 @@ const server = createServer(async (req, res) => {
     const url = new URL(req.url ?? "/", "http://localhost");
 
     if (req.method === "GET" && url.pathname === "/") {
-      const hand = ensureHand(req, res);
+      const { hand } = ensureHand(req, res);
       res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
       res.end(wallPage(allMarks(), hand, msUntilNextMark(hand.id), capFor(totalLength())));
       return;
@@ -132,7 +133,7 @@ const server = createServer(async (req, res) => {
     }
 
     if (req.method === "POST" && url.pathname === "/api/marks") {
-      const hand = ensureHand(req, res);
+      const { hand } = ensureHand(req, res);
 
       const raw = await readBody(req);
       let path: unknown;
