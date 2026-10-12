@@ -67,6 +67,11 @@ honest to that, not just the README:
   returns, not instead of it --- a hand's mark has to survive a restart
   before any open tab is told about it, so real-time is layered on top of
   persistence, not a substitute for it.
+- **A hand's username is for that hand's page and the server's logs, nowhere
+  else.** Every decision that depends on which hand is asking logs one line
+  through `src/log.ts`, naming the hand by username, never by its cookie id.
+  No username, id or per-hand count ever goes into another hand's page or
+  the SSE stream.
 - **When a check catches a real mistake, fix the check or the harness too**,
   not just the code once, so the same mistake can't silently ship again.
 
