@@ -93,6 +93,34 @@ it("a returning hand can tell its own mark from everyone else's", async () => {
   expect(asOther.ownMark).toBeUndefined();
 });
 
+it("shows a hand its own username and mark count, and nobody else's", async () => {
+  const pageFor = async (cookie: string) =>
+    new JSDOM(await (await fetch(new URL("/", baseUrl), { headers: { Cookie: cookie } })).text()).window.document;
+  const mine = cookieFrom(await fetch(new URL("/", baseUrl)));
+  const other = cookieFrom(await fetch(new URL("/", baseUrl)));
+
+  const before = await pageFor(mine);
+  const name = before.getElementById("username")?.textContent ?? "";
+  expect(name).toMatch(/^[a-z]+[1-9]\d?$/);
+  expect(before.getElementById("own-count")?.textContent).toBe("no marks yet");
+
+  const post = await fetch(new URL("/api/marks", baseUrl), {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Cookie: mine },
+    body: JSON.stringify({ path: "M40,40 L60,60" }),
+  });
+  expect(post.status).toBe(201);
+
+  // Same cookie, same name on a fresh request; the count is this hand's own.
+  const after = await pageFor(mine);
+  expect(after.getElementById("username")?.textContent).toBe(name);
+  expect(after.getElementById("own-count")?.textContent).toBe("1 mark");
+
+  const theirs = await pageFor(other);
+  expect(theirs.getElementById("username")?.textContent).not.toBe(name);
+  expect(theirs.documentElement.outerHTML).not.toContain(name);
+});
+
 it("refuses a second mark from the same hand on the same day", async () => {
   const first = await fetch(new URL("/", baseUrl));
   const cookie = cookieFrom(first);

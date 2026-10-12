@@ -7,6 +7,9 @@
   const svg = document.getElementById("wall");
   const status = document.getElementById("status");
   const roomPhrase = document.getElementById("room-phrase");
+  // "...and have added N marks": the server's count of this hand's marks,
+  // kept true here when one lands without a reload.
+  const ownCount = document.getElementById("own-count");
   const handColour = script.dataset.handColour;
   let canDraw = script.dataset.canDraw === "true";
   // The longest mark the wall has room for, in view-box units. The server
@@ -149,6 +152,11 @@
           return;
         }
         canDraw = false;
+        if (ownCount) {
+          const n = Number(ownCount.dataset.count) + 1;
+          ownCount.dataset.count = String(n);
+          ownCount.textContent = n === 1 ? "1 mark" : `${n} marks`;
+        }
         status.textContent =
           "Your mark is on the wall: the thicker stroke, on top. You can add another in 24 hours.";
       } catch {

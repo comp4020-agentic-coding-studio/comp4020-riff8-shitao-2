@@ -25,6 +25,7 @@ function buildWall({
       <svg id="wall" viewBox="0 0 100 100"></svg>
       <p id="room">The wall has room for <strong id="room-phrase">a stroke</strong> right now.</p>
       <p id="status"></p>
+      <p id="you">You've just arrived and have added <span id="own-count" data-count="0">no marks yet</span>.</p>
     </body>`,
     { runScripts: "dangerously", url: "http://localhost/" },
   );
@@ -101,6 +102,7 @@ function buildWall({
   const releaseFetch = () => resolveFetch?.();
 
   return {
+    document: window.document,
     svg,
     status,
     roomPhrase,
@@ -131,6 +133,13 @@ it("tells a hand which stroke is theirs the moment its first mark lands", async 
   stroke(1, 9);
   await settle();
   expect(status.textContent).toContain("the thicker stroke");
+});
+
+it("counts the new mark in the hand's own line as soon as it lands", async () => {
+  const { document, stroke, settle } = buildWall({ canDraw: true });
+  stroke(1, 9);
+  await settle();
+  expect(document.getElementById("own-count")?.textContent).toBe("1 mark");
 });
 
 it("never attaches drawing listeners at all when canDraw starts false", async () => {

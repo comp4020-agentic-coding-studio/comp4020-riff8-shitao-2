@@ -1,6 +1,6 @@
 import { marked } from "marked";
 import { roomPhrase } from "./cap.ts";
-import type { Mark } from "./db.ts";
+import type { Hand, Mark } from "./db.ts";
 
 const escape = (s: string): string =>
   s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -26,9 +26,35 @@ export function untilPhrase(ms: number): string {
   return ms <= 3_600_000 ? "within the hour" : `in about ${hours} hours`;
 }
 
+const DAY = 24 * 3_600_000;
+
+// How long ago a hand first came by, in durations rather than calendar days,
+// for the same reason untilPhrase does: the server doesn't know whose "today".
+export function sincePhrase(ms: number): string {
+  if (ms < DAY) return "less than a day ago";
+  if (ms < 2 * DAY) return "a day ago";
+  if (ms < 14 * DAY) return `${Math.floor(ms / DAY)} days ago`;
+  if (ms < 60 * DAY) return `${Math.floor(ms / (7 * DAY))} weeks ago`;
+  if (ms < 365 * DAY) return `${Math.floor(ms / (30 * DAY))} months ago`;
+  return "over a year ago";
+}
+
+export function marksPhrase(count: number): string {
+  return count === 0 ? "no marks yet" : count === 1 ? "1 mark" : `${count} marks`;
+}
+
+// One true sentence about this hand's own continuity, from what the server
+// already stores: when its cookie was minted and how many marks it has drawn.
+// The count sits in its own element so wall.js can bump it when a mark lands.
+export function continuityLine(createdAt: number, ownCount: number, now = Date.now()): string {
+  const age = now - createdAt;
+  const opening = ownCount === 0 && age < 10 * 60_000 ? "You've just arrived" : `You first came by ${sincePhrase(age)}`;
+  return `${opening} and have added <span id="own-count" data-count="${ownCount}">${marksPhrase(ownCount)}</span>.`;
+}
+
 export function wallPage(
   marks: Mark[],
-  hand: { id: string; colour: string },
+  hand: Hand,
   msUntilNextMark: number,
   cap: number,
 ): string {
@@ -50,6 +76,8 @@ export function wallPage(
   ].join("\n      ");
   const ownCount = own.length;
   const handColour = hand.colour;
+  // A username is still an identity: it's rendered only to the hand it
+  // names, from that hand's own cookie, and never sent anywhere else.
 
   const prompt = alreadyMarked
     ? `<p id="status">Your mark is already on the wall. You can add another ${untilPhrase(msUntilNextMark)}.</p>`
@@ -69,7 +97,7 @@ export function wallPage(
       ${strokes}
       </svg>
       ${prompt}
-      <p><small>You draw as <strong style="color:${escape(handColour)}">this colour</strong>.${ownCount > 0 ? ` Your ${ownCount === 1 ? "mark is" : `${ownCount} marks are`} the thicker ${ownCount === 1 ? "stroke" : "strokes"}.` : ""} <a href="/readme/">What this is, and why</a>.</small></p>
+      <p id="you"><small>You're <strong id="username">${escape(hand.name)}</strong>, drawing in <strong style="color:${escape(handColour)}">this colour</strong>. ${continuityLine(hand.created_at, ownCount)}${ownCount > 0 ? ` ${ownCount === 1 ? "It's the thicker stroke" : "They're the thicker strokes"}.` : ""} <a href="/readme/">What this is, and why</a>.</small></p>
     </main>
     <script
       src="/wall.js"
