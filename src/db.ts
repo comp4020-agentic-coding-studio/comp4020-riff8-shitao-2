@@ -2,6 +2,7 @@ import { DatabaseSync } from "node:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { pathLength } from "./cap.ts";
+import { uniqueNameFor } from "./identity.ts";
 
 export interface Hand {
   id: string;
@@ -37,6 +38,19 @@ db.exec(`
     created_at INTEGER NOT NULL
   );
 `);
+
+// Hands minted before names became `adjectiveanimalN` handles carry the old
+// hyphenated pair, which nothing ever displayed or logged; each gets its
+// handle once, here, before the index below makes a name unique.
+const nameTakenStmt = db.prepare("SELECT 1 FROM hands WHERE name = ?");
+const renameStmt = db.prepare("UPDATE hands SET name = ? WHERE id = ?");
+export function nameTaken(name: string): boolean {
+  return nameTakenStmt.get(name) !== undefined;
+}
+for (const { id } of db.prepare("SELECT id FROM hands WHERE name LIKE '%-%'").all() as { id: string }[]) {
+  renameStmt.run(uniqueNameFor(id, nameTaken), id);
+}
+db.exec("CREATE UNIQUE INDEX IF NOT EXISTS hands_name ON hands (name)");
 
 const insertHandStmt = db.prepare(
   "INSERT INTO hands (id, name, colour, created_at) VALUES (?, ?, ?, ?)",

@@ -2,8 +2,8 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { readFileSync } from "node:fs";
 import { extname, join } from "node:path";
 import { capFor, pathLength, roomPhrase } from "./cap.ts";
-import { addMark, allMarks, createHand, getHand, msUntilNextMark, totalLength } from "./db.ts";
-import { colourFor, nameFor, newHandId, parseHandCookie, setHandCookie } from "./identity.ts";
+import { addMark, allMarks, createHand, getHand, msUntilNextMark, nameTaken, totalLength } from "./db.ts";
+import { colourFor, newHandId, parseHandCookie, setHandCookie, uniqueNameFor } from "./identity.ts";
 import { readmePage, untilPhrase, wallPage } from "./pages.ts";
 
 const PORT = Number(process.env.PORT ?? 8080);
@@ -51,7 +51,7 @@ function ensureHand(req: IncomingMessage, res: ServerResponse): HandInfo {
   if (found) return { id: found.id, colour: found.colour };
 
   const id = newHandId();
-  const hand = createHand(id, nameFor(id), colourFor(id));
+  const hand = createHand(id, uniqueNameFor(id, nameTaken), colourFor(id));
   res.setHeader("Set-Cookie", setHandCookie(id, isProd));
   return { id: hand.id, colour: hand.colour };
 }
